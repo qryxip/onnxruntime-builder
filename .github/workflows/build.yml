@@ -30,6 +30,36 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - artifact_name: onnxruntime-win-x64
+            os: windows-2019
+            build_opts: --cmake_extra_defines CMAKE_SYSTEM_NAME=Windows CMAKE_SYSTEM_PROCESSOR=x86_64 --config Release --parallel --update --build --build_shared_lib
+            result_dir: build/Windows
+            release_config: Release
+          - artifact_name: onnxruntime-win-x64-gpu
+            os: windows-2019
+            cuda_version: 11.6.2
+            cudnn_url: https://developer.download.nvidia.com/compute/redist/cudnn/v8.4.1/local_installers/11.6/cudnn-windows-x86_64-8.4.1.50_cuda11.6-archive.zip
+            build_opts: --cmake_extra_defines CMAKE_SYSTEM_NAME=Windows CMAKE_SYSTEM_PROCESSOR=x86_64 --config Release --parallel --update --build --build_shared_lib --use_cuda --cuda_version 11.6.2
+            result_dir: build/Windows
+            release_config: Release
+          - artifact_name: onnxruntime-linux-x64
+            os: ubuntu-20.04
+            build_opts: --cmake_extra_defines CMAKE_SYSTEM_NAME=Linux CMAKE_SYSTEM_PROCESSOR=x86_64 --config Release --parallel --update --build --build_shared_lib
+            result_dir: build/Linux
+            release_config: Release
+          - artifact_name: onnxruntime-linux-x64-gpu
+            os: ubuntu-20.04
+            cuda_version: 11.6.2
+            cudnn_url: https://developer.download.nvidia.com/compute/redist/cudnn/v8.4.1/local_installers/11.6/cudnn-linux-x86_64-8.4.1.50_cuda11.6-archive.tar.xz
+            build_opts: --cmake_extra_defines CMAKE_SYSTEM_NAME=Linux CMAKE_SYSTEM_PROCESSOR=x86_64 --config Release --parallel --update --build --build_shared_lib --use_cuda
+            result_dir: build/Linux
+            release_config: Release
+          - artifact_name: onnxruntime-osx-x86_64
+            os: macos-12
+            build_opts: --cmake_extra_defines CMAKE_SYSTEM_NAME=Darwin CMAKE_SYSTEM_PROCESSOR=x86_64 --config Release --parallel --update --build --build_shared_lib
+            result_dir: build/MacOS
+            release_config: Release
+
           - artifact_name: onnxruntime-linux-armhf
             os: ubuntu-20.04
             cc_version: "8"
@@ -88,13 +118,25 @@ jobs:
         uses: actions/checkout@v2
         with:
           repository: microsoft/onnxruntime
-          submodules: true
+          submodules: recursive
           ref: v${{ env.ONNXRUNTIME_VERSION }}
 
       - name: Dump matrix context
         env:
           MATRIX_CONTEXT: ${{ toJSON(matrix) }}
-        run: echo "$MATRIX_CONTEXT" > matrix.json
+        run: |
+          echo "$MATRIX_CONTEXT" > matrix.json
+          cat matrix.json
+
+      - name: Install tree
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          install: tree
+
+      - name: Install tree
+        if: runner.os == 'macOS'
+        run: brew install tree
 
       - name: Cache build result
         id: cache-build-result
@@ -104,7 +146,14 @@ jobs:
           key: ${{ matrix.artifact_name }}-v${{ env.ONNXRUNTIME_VERSION }}-cache-v1-${{ hashFiles('matrix.json') }}
 
       - name: Install build dependencies
-        if: steps.cache-build-result.outputs.cache-hit != 'true' && startsWith(matrix.os, 'ubuntu')
+        if: steps.cache-build-result.outputs.cache-hit != 'true' && startsWith(matrix.os, 'ubuntu') && matrix.cuda_version && matrix.cudnn_url
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y moreutils
+          python3 -m pip install -r tools/ci_build/github/linux/docker/inference/x64/python/cpu/scripts/requirements.txt
+
+      - name: Install build dependencies
+        if: steps.cache-build-result.outputs.cache-hit != 'true' && startsWith(matrix.os, 'ubuntu') && matrix.arch
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -116,6 +165,56 @@ jobs:
               g++-${{ matrix.cxx_version }}${{ env.ARCH_SUFFIX }} \
               python3
 
+      - name: Setup CUDA
+        if: steps.cache-build-result.outputs.cache-hit != 'true' && matrix.cuda_version
+        uses: Jimver/cuda-toolkit@v0.2.8
+        with:
+          method: network
+          cuda: ${{ matrix.cuda_version }}
+
+      - name: Set `$CUDA_HOME`
+        if: steps.cache-build-result.outputs.cache-hit != 'true' && matrix.cuda_version
+        shell: bash
+        run: echo "CUDA_HOME=$CUDA_PATH" >> "$GITHUB_ENV"
+
+      - name: Setup cuDNN
+        if: steps.cache-build-result.outputs.cache-hit != 'true' && matrix.cudnn_url
+        shell: bash
+        run: |
+          set -eux
+
+          mkdir download
+
+          if [ "$RUNNER_OS" = Windows ]; then
+            curl -L "${{ matrix.cudnn_url }}" > download/cudnn.zip
+            unzip download/cudnn.zip -d download
+            rm download/cudnn.zip
+          else
+            curl -L "${{ matrix.cudnn_url }}" > download/cudnn.tar.xz
+            tar -Jxf download/cudnn.tar.xz -C download/
+            rm download/cudnn.tar.xz
+          fi
+
+          cudnn_path=$(find download -maxdepth 1 -name 'cudnn-*')
+
+          if [ ${{ runner.os }} = Windows ]; then
+            tree() {
+              msys2.cmd -c "type tree"
+              msys2.cmd -c "tree $1"
+            }
+          fi
+          tree "$cudnn_path"
+
+          if [ ${{ runner.os }} = Windows ]; then
+            cudnn_path=$(cygpath -wa "$cudnn_path")
+          else
+            cudnn_path=$(realpath "$cudnn_path")
+          fi
+
+          echo "CUDNN_PATH=$cudnn_path" >> "$GITHUB_ENV"
+          echo "CUDNN_HOME=$cudnn_path" >> "$GITHUB_ENV"
+          echo "$cudnn_path/bin" >> "$GITHUB_PATH"
+
       # ONNX Runtime v1.14.1 requires CMake 3.24 or higher.
       - name: Install CMake
         if: steps.cache-build-result.outputs.cache-hit != 'true' && startsWith(matrix.os, 'ubuntu')
@@ -125,8 +224,8 @@ jobs:
           wget -O cmake.sh "https://github.com/Kitware/CMake/releases/download/v${{ env.CMAKE_VERSION }}/cmake-${{ env.CMAKE_VERSION }}-linux-x86_64.sh"
           sudo bash cmake.sh --skip-license --prefix=/usr/local
 
-      - name: Configure build environment
-        if: steps.cache-build-result.outputs.cache-hit != 'true' && startsWith(matrix.os, 'ubuntu')
+      - name: Configure build environment (Linux arm/aarch64)
+        if: steps.cache-build-result.outputs.cache-hit != 'true' && startsWith(matrix.os, 'ubuntu') && matrix.arch
         run: |
           # Required for arm build
           # https://github.com/microsoft/onnxruntime/issues/4189#issuecomment-642528278
@@ -143,8 +242,22 @@ jobs:
           echo "CC=${{ env.ARCH_PREFIX }}gcc-${{ matrix.cc_version }}" >> "$GITHUB_ENV"
           echo "CXX=${{ env.ARCH_PREFIX }}g++-${{ matrix.cxx_version }}" >> "$GITHUB_ENV"
 
-      - name: Build ONNX Runtime
-        if: steps.cache-build-result.outputs.cache-hit != 'true'
+      # ???
+      - name: Configure build environment (Linux CUDA)
+        if: steps.cache-build-result.outputs.cache-hit != 'true' && startsWith(matrix.os, 'ubuntu') && matrix.cuda_version
+        run: |
+          cat <(echo "include_directories($CUDNN_HOME/include)") cmake/CMakeLists.txt | sponge cmake/CMakeLists.txt
+          cat <(echo "link_directories($CUDNN_HOME/lib)") cmake/CMakeLists.txt | sponge cmake/CMakeLists.txt
+          git diff
+
+      - name: Build ONNX Runtime (Windows)
+        if: steps.cache-build-result.outputs.cache-hit != 'true' && runner.os == 'Windows'
+        shell: cmd
+        run: .\build.bat ${{ matrix.build_opts }}
+
+      - name: Build ONNX Runtime (non-Windows)
+        if: steps.cache-build-result.outputs.cache-hit != 'true' && runner.os != 'Windows'
+        shell: bash
         run: |
           # add --arm for gcc-8: https://github.com/microsoft/onnxruntime/issues/4189
           # skip test: https://github.com/microsoft/onnxruntime/issues/2436
@@ -152,29 +265,104 @@ jobs:
           # Both CMAKE_SYSTEM_NAME and CMAKE_SYSTEM_PROCESSOR are required.
           bash ./build.sh ${{ matrix.build_opts }}
 
+      - name: tree build
+        shell: bash
+        run: |
+          if [ ${{ runner.os }} = Windows ]; then
+            tree() {
+              msys2.cmd -c "tree $1"
+            }
+          fi
+          tree build
+
       - name: Organize artifact
         shell: bash
         run: |
           # コピー先artifactを予め削除しておく
           rm -rf ${{ matrix.result_dir }}/${{ matrix.artifact_name }}
           rm -rf ./artifact
-          # Set library name
-          if [[ ${{ matrix.artifact_name }} == onnxruntime-linux-* ]]; then
-            ONNXRUNTIME_NAME=libonnxruntime.so.${{ env.ONNXRUNTIME_VERSION }}
-          elif [[ ${{ matrix.artifact_name }} == onnxruntime-ios-* ]]; then
-            ONNXRUNTIME_NAME=libonnxruntime.${{ env.ONNXRUNTIME_VERSION }}.dylib
+
+          ls -l ${{ matrix.result_dir }}/${{ matrix.release_config }}
+
+          mkdir -p ./artifact/${{ matrix.artifact_name }}/include
+          mkdir -p ./artifact/${{ matrix.artifact_name }}/lib
+
+          cp ./LICENSE ./artifact/${{ matrix.artifact_name }}/
+          cp ./ThirdPartyNotices.txt ./artifact/${{ matrix.artifact_name }}/
+          cp ./VERSION_NUMBER ./artifact/${{ matrix.artifact_name }}/
+
+          cp ./include/onnxruntime/core/session/onnxruntime_c_api.h ./artifact/${{ matrix.artifact_name }}/include/
+
+          # TODO
+          #mv include/onnxruntime/core/providers/dml/dml_provider_factory.h ./artifact/${{ matrix.artifact_name }}/include/
+
+          if [ ${{ runner.os }} = Windows ]; then
+            cp ${{ matrix.result_dir }}/${{ matrix.release_config }}/onnxruntime.dir/${{ matrix.release_config }}/onnxruntime.dll.recipe ./artifact/${{ matrix.artifact_name }}/
+          elif ${{ contains(matrix.artifact_name, 'ios') }}; then
+            if ${{ contains(matrix.artifact_name, 'arm64') }}; then
+              arch=arm64
+            elif ${{ contains(matrix.artifact_name, 'x86_64') }}; then
+              arch=x86_64
+            fi
+            cp ${{ matrix.result_dir }}/build/onnxruntime.build/${{ matrix.release_config }}/Objects-normal/"$arch"/onnxruntime.${{ env.ONNXRUNTIME_VERSION }}.LinkFileList ./artifact/${{ matrix.artifact_name }}/
+            cp ${{ matrix.result_dir }}/build/onnxruntime.build/${{ matrix.release_config }}/Objects-normal/"$arch"/onnxruntime.${{ env.ONNXRUNTIME_VERSION }}_dependency_info.dat ./artifact/${{ matrix.artifact_name }}/
           else
-            echo "Unknown target found : ${{ matrix.artifact_name }}"
-            return 1
+            cp ${{ matrix.result_dir }}/${{ matrix.release_config }}/CMakeFiles/onnxruntime.dir/link.txt ./artifact/${{ matrix.artifact_name }}/
           fi
-          ./tools/ci_build/github/linux/copy_strip_binary.sh \
-            -r ${{ matrix.result_dir }} \
-            -a ${{ matrix.artifact_name }} \
-            -l $ONNXRUNTIME_NAME \
-            -c ${{ matrix.release_config }} \
-            -s "$(pwd)" \
-            -t "$(git rev-parse HEAD)"
-          mv ${{ matrix.result_dir }}/${{ matrix.artifact_name }} ./artifact/
+
+          case ${{ runner.os }} in
+            Windows)
+              staticlib_ext=lib
+              dll_ext=dll
+              ;;
+            macOS)
+              staticlib_ext=a
+              dll_ext=dylib
+              ;;
+            Linux)
+              staticlib_ext=a
+              dll_ext=so
+              ;;
+          esac
+
+          find ${{ matrix.result_dir }}/${{ matrix.release_config }} -name "*.$staticlib_ext" -exec cp {} ./artifact/${{ matrix.artifact_name }}/lib/ ';'
+          find ${{ matrix.result_dir }}/${{ matrix.release_config }} -name "*onnxruntime*.$dll_ext*" -exec cp {} ./artifact/${{ matrix.artifact_name }}/lib/ ';'
+
+          if ${{ !!matrix.cuda_version }}; then
+            cp -r ${{ matrix.result_dir }}/${{ matrix.release_config }}/CMakeFiles/onnxruntime.dir artifact/${{ matrix.artifact_name }}/
+            cp -r ${{ matrix.result_dir }}/${{ matrix.release_config }}/CMakeFiles/onnxruntime_providers_shared.dir artifact/${{ matrix.artifact_name }}/
+            cp -r ${{ matrix.result_dir }}/${{ matrix.release_config }}/CMakeFiles/onnxruntime_providers_cuda.dir artifact/${{ matrix.artifact_name }}/
+          fi
+
+          if [ ${{ runner.os }} = Windows ]; then
+            tree() {
+              msys2.cmd -c "tree $1"
+            }
+          fi
+          tree ./artifact/${{ matrix.artifact_name }}/
+
+          if [ -n "$CUDA_HOME" ]; then
+            tree "$CUDA_HOME"
+            tree "$CUDNN_HOME"
+          fi
+
+          ## Set library name
+          #if [[ ${{ matrix.artifact_name }} == onnxruntime-linux-* ]]; then
+          #  ONNXRUNTIME_NAME=libonnxruntime.so.${{ env.ONNXRUNTIME_VERSION }}
+          #elif [[ ${{ matrix.artifact_name }} == onnxruntime-ios-* ]]; then
+          #  ONNXRUNTIME_NAME=libonnxruntime.${{ env.ONNXRUNTIME_VERSION }}.dylib
+          #else
+          #  echo "Unknown target found : ${{ matrix.artifact_name }}"
+          #  return 1
+          #fi
+          #./tools/ci_build/github/linux/copy_strip_binary.sh \
+          #  -r ${{ matrix.result_dir }} \
+          #  -a ${{ matrix.artifact_name }} \
+          #  -l $ONNXRUNTIME_NAME \
+          #  -c ${{ matrix.release_config }} \
+          #  -s "$(pwd)" \
+          #  -t "$(git rev-parse HEAD)"
+          #mv ${{ matrix.result_dir }}/${{ matrix.artifact_name }} ./artifact/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v2
