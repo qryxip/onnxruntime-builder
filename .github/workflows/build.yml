@@ -956,6 +956,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Set the tag name
+        if: env.RELEASE == 'true'
         run: |
           tag=${{ needs.config.outputs.tag }}
           release_id=${{ fromJson(needs.create-draft-release.outputs.release).id }}
@@ -976,9 +977,9 @@ jobs:
             )
             if [ "$current_tag_name" = $tag ]; then
               exit
-            else
-              echo 'tag_name was not set. retrying' >&2
             fi
+            echo 'tag_name was not set. retrying' >&2
+            sleep 1
           done
 
           echo "::error title=set-tag-name::Could not set 'tag_name'. Please set it manually"
