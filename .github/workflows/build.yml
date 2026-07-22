@@ -55,7 +55,7 @@ jobs:
         run: ':'
 
   # 他のリポジトリとは異なり、既存の同名のtag_nameがあることを許容する。
-  # 何故なら本リポジトリではリリースの「差し替え」を行うため（ゆえにimmutable releaseも使わない）。
+  # 何故なら本リポジトリではリリースの差し替えを行うため。ゆえにimmutable releaseも使わない。
   create-draft-release:
     needs: config
     runs-on: ubuntu-latest
