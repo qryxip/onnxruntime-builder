@@ -63,23 +63,8 @@ jobs:
       # `RELEASE`がtrueなら、GitHub REST APIの`Release`オブジェクトの一部。falseならnull。
       release: ${{ steps.create-draft-release.outputs.release || 'null' }}
     steps:
-      - name: Confirm that the tag does not exist at the moment
-        if: env.RELEASE == 'true'
-        run: |
-          tag=${{ needs.config.outputs.tag }}
-          exists=$(
-            gh api \
-              "/repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$tag" \
-              -H 'Accept: application/vnd.github+json' \
-              -H 'X-GitHub-Api-Version: 2022-11-28' \
-              -q '[.] | flatten | any(.ref == "refs/tags/'$tag'")'
-          )
-          if [ "$exists" = true ]; then
-            echo "::error title=create-draft-release::'refs/tags/$tag' already exists"
-            exit 1
-          fi
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # 他のリポジトリとは異なり、既存の同名のtag_nameがあることを許容する。
+      # 何故なら本リポジトリではリリースの「差し替え」を行うため（ゆえにimmutable releaseも使わない）。
 
       - name: Create a tagless draft release
         if: env.RELEASE == 'true'
@@ -1008,8 +993,24 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Set the tag name
+      - name: Check whether the tag already exists
         if: env.RELEASE == 'true'
+        id: check-tag-existence
+        run: |
+          tag=${{ needs.config.outputs.tag }}
+          exists=$(
+            gh api \
+              "/repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$tag" \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              -q '[.] | flatten | any(.ref == "refs/tags/'$tag'")'
+          )
+          echo "exists=$exists" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set the tag name
+        if: env.RELEASE == 'true' && steps.check-tag-existence.outputs.exists != 'true'
         run: |
           tag=${{ needs.config.outputs.tag }}
           release_id=${{ fromJson(needs.create-draft-release.outputs.release).id }}
