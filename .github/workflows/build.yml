@@ -992,8 +992,6 @@ jobs:
     permissions:
       contents: write
     steps:
-      # 当該のtag_nameが既に存在していた場合、出来上がったdraft releaseをブラウザで開くと"Target"は"Tag"が指すコミットになってしまっているように見える。
-      # しかしそれはブラウザでの見た目のみであり、実際にはtarget_commitishはちゃんとtag_nameとは別個に設定されている。
       - name: Set the tag name
         if: env.RELEASE == 'true'
         run: |
