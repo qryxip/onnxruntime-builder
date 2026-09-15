@@ -1,7 +1,6 @@
 name: actionlint
 
 on:
-  - push
   - pull_request
 
 jobs:

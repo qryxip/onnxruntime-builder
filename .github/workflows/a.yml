@@ -1,0 +1,36 @@
+name: a
+
+on:
+  workflow_dispatch:
+    inputs:
+      flag:
+        type: boolean
+        required: false
+        default: false
+
+jobs:
+  a:
+    runs-on: ubuntu-slim
+    strategy:
+      matrix:
+        x: ['dummy']
+        y: ['dummy']
+        z: ['dummy']
+        include:
+          - x: '1'
+            y: 'a'
+            z: true
+          - x: '2'
+            y: 'b'
+            z: ${{ inputs.flag || false }}
+          - x: '3'
+            y: 'c'
+            z: true
+        exclude:
+          - x: 'dummy'
+            y: 'dummy'
+            z: 'dummy'
+          - z: false
+    steps:
+      - run: |
+          echo '${{ toJSON(matrix) }}'

@@ -8,7 +8,6 @@
 name: Build C++ Shared Library
 
 on:
-  push:
   workflow_dispatch:
     inputs:
       version:
